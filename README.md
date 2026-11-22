@@ -3,10 +3,65 @@
 A command-line chat app where **Claude** answers questions about a small set of documents served by an **MCP (Model Context Protocol) server**.
 
 ```text
-you ──> CLI (prompt_toolkit) ──> DocAgent loop ──> Claude API (ClaudeClient)
-                                     │  ▲
-                          tool calls ▼  │ tool results
-                                 MCPClient ──stdio──> DocumentMCP server
+┌──────────────────────┐
+│         You          │
+└──────────────────────┘
+      │          ▲
+      │ question │ answer
+      ▼          │
+┌──────────────────────┐
+│ CLI (prompt_toolkit) │
+└──────────────────────┘
+      │          ▲
+      │ query    │ answer
+      ▼          │
+┌──────────────────────┐   1. messages + tools    ┌──────────────┐  HTTPS  ┌────────────┐
+│       DocAgent       │ ───────────────────────> │ ClaudeClient │ ──────> │ Claude API │
+│   (tool-use loop)    │ <─────────────────────── │              │ <────── │            │
+└──────────────────────┘   2. tool_use or text    └──────────────┘         └────────────┘
+      │          ▲
+      │ 3. call  │ 4. tool
+      │    tool  │    result
+      ▼          │
+┌──────────────────────┐
+│      MCPClient       │
+└──────────────────────┘
+      │          ▲
+      │  stdio   │
+      │ JSON-RPC │
+      ▼          │
+┌──────────────────────┐
+│  DocumentMCP server  │
+│    (subprocess)      │
+└──────────────────────┘
+```
+
+DocAgent sits in the middle. Claude never talks to the MCP server directly: it only *asks* for a tool call (`tool_use`), DocAgent runs it through `MCPClient`, and sends the result back to Claude. This repeats until Claude replies with text.
+
+One question, step by step:
+
+```mermaid
+sequenceDiagram
+    actor You
+    participant CLI as CLI (prompt_toolkit)
+    participant Agent as DocAgent
+    participant Claude as ClaudeClient → Claude API
+    participant MCP as MCPClient → DocumentMCP server
+
+    You->>CLI: "Summarize @report.pdf"
+    CLI->>Agent: run(query)
+    Agent->>MCP: read @mentioned docs + list tools
+    MCP-->>Agent: document content, tools (read_doc, write_doc)
+    Agent->>Claude: 1. messages + tools
+    loop while Claude asks for a tool (max 20 rounds)
+        Claude-->>Agent: 2. tool_use (e.g. read_doc)
+        Agent->>MCP: 3. call_tool("read_doc", {doc_id})
+        MCP-->>Agent: 4. tool result
+        Agent->>Claude: tool_result + full history
+    end
+    Claude-->>Agent: 2. text answer (stop_reason end_turn)
+    Agent-->>CLI: answer
+    CLI-->>You: prints the response
 ```
 
 | Part | File | What it does |

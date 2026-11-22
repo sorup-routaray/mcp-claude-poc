@@ -405,6 +405,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
+    { name = "anyio" },
     { name = "mcp", extra = ["cli"] },
     { name = "prompt-toolkit" },
     { name = "python-dotenv" },
@@ -413,6 +414,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=2.12.0,<3" },
+    { name = "anyio", specifier = ">=4" },
     { name = "mcp", extras = ["cli"], specifier = ">=2.3.0,<3" },
     { name = "prompt-toolkit", specifier = ">=3.0.51" },
     { name = "python-dotenv", specifier = ">=1.2.4" },
