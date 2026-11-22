@@ -78,6 +78,7 @@ sequenceDiagram
 2. [Agent](#agent)
    - [`ClaudeClient`](#claudeclient)
    - [Agent loop (`Agent.run`)](#agent-loop-agentrun)
+   - [How Claude chooses a tool](#how-claude-chooses-a-tool)
 3. [Requirements](#requirements)
    - [Without uv (plain pip)](#without-uv-plain-pip)
 4. [Configuration](#configuration)
@@ -162,8 +163,123 @@ user query ──> _process_query()            # DocAgent: @mentions inlined, /p
 
 - **Max rounds:** `MAX_TOOL_ROUNDS = 20` tool round trips per question, so a runaway loop can't run (and bill) forever.
 - **Multiple servers:** tools from every `--server` are offered to Claude. On a name clash, the first server wins.
-- **Tool errors** (unknown tool, `MCPError`) go back to Claude as `tool_result` with `is_error: true`, so it can recover instead of crashing.
+- **Tool errors** (unknown tool, `MCPError`) go back to Claude as `tool_result` with `is_error: true`, so it can recover instead of crashing. A dead MCP server fails the turn with a `ConnectionError` instead.
 - **Memory:** the conversation (`Agent.messages`) lives for the whole chat session, in memory only.
+
+### How Claude chooses a tool
+
+Claude **never runs a tool itself**. Your app sends it a menu of tools with every request; Claude reads the menu, decides whether a tool would help, and if so replies with a structured `tool_use` block saying *which* tool and *with what arguments*. Your code makes the actual call and sends the result back.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Server as DocumentMCP server
+    participant MCP as MCPClient
+    participant Agent as Agent / DocAgent
+    participant Claude as Claude API
+
+    Note over Agent: _collect_tools()
+    Agent->>MCP: list_tools()
+    MCP->>Server: tools/list (JSON-RPC over stdio)
+    Server-->>MCP: read_doc, write_doc (name, description, input schema)
+    MCP-->>Agent: tools
+    Note over Agent: Convert to Claude's tool format<br/>and build routes: tool name → MCPClient
+
+    Agent->>Claude: messages + tools (the "menu")
+    Note over Claude: Reads the question, the history<br/>and every tool's name + description,<br/>then decides (tool_choice: auto)
+
+    alt Claude needs a tool
+        Claude-->>Agent: stop_reason "tool_use"<br/>tool_use {id, name: "read_doc", input: {doc_id: "spec.txt"}}
+        Note over Agent: _run_tools(): routes["read_doc"] → MCPClient
+        Agent->>MCP: call_tool("read_doc", {doc_id: "spec.txt"})
+        MCP->>Server: tools/call
+        Server-->>MCP: document text
+        MCP-->>Agent: CallToolResult
+        Agent->>Claude: tool_result {tool_use_id: same id, content: document text}
+        Note over Claude: Reads the result, then either asks<br/>for another tool or answers
+    else Claude can answer already
+        Claude-->>Agent: stop_reason "end_turn" + text answer
+    end
+```
+
+#### Step 1: the app sends Claude a menu of tools
+
+Before calling Claude, `Agent._collect_tools()` (`agents/base_agent.py`) asks every MCP server for its tools and converts each one to the Claude API format. The names and descriptions come straight from the `@mcp.tool(...)` decorators in `server/mcp_server.py`:
+
+```json
+"tools": [
+  {
+    "name": "read_doc",
+    "description": "Read the contents of a document by its ID.",
+    "input_schema": {
+      "type": "object",
+      "properties": { "doc_id": { "type": "string", "description": "The ID of the document to read." } },
+      "required": ["doc_id"]
+    }
+  },
+  {
+    "name": "write_doc",
+    "description": "Edit a document by replacing old_string with new_string.",
+    "input_schema": { "...": "doc_id, old_string, new_string" }
+  }
+]
+```
+
+This list is sent with **every** request: `send_message(self.messages, tools=tools)`.
+
+#### Step 2: Claude decides
+
+Claude reads the question, the conversation so far and each tool's name, description and argument descriptions. By default the API lets Claude decide (`tool_choice: auto`); the code doesn't force a tool.
+
+| Question | What Claude does | Why |
+| --- | --- | --- |
+| `Summarize @report.pdf` | Answers with text | The document was already inlined by the `@` mention |
+| `What's in spec.txt?` | Calls `read_doc` | It needs the content, and `read_doc` "reads the contents of a document" |
+| `Fix the typo in plan.md` | Calls `read_doc`, then `write_doc` | It must see the text before it can replace part of it |
+| `What is MCP?` | Answers with text | No document is needed |
+
+#### Step 3: Claude's reply names the tool
+
+```json
+{
+  "stop_reason": "tool_use",
+  "content": [
+    { "type": "text", "text": "I'll read the spec first." },
+    { "type": "tool_use", "id": "toolu_01A...", "name": "read_doc", "input": { "doc_id": "spec.txt" } }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Which tool to run |
+| `input` | The arguments, shaped by that tool's `input_schema` |
+| `id` | Links the result back to this exact call |
+
+One reply can contain several `tool_use` blocks.
+
+#### Step 4: the app routes the call and returns the result
+
+`_collect_tools()` also builds `routes`, a map from tool name to the `MCPClient` that owns it. `_run_tools()` looks up `routes[block.name]`, calls `client.call_tool("read_doc", {"doc_id": "spec.txt"})`, and sends the result back with the **same id**. All results for one reply go back together in a single message:
+
+```json
+{
+  "role": "user",
+  "content": [
+    { "type": "tool_result", "tool_use_id": "toolu_01A...", "content": "...document text..." }
+  ]
+}
+```
+
+#### Step 5: repeat until Claude answers
+
+Claude reads the result and either asks for another tool (back to step 3) or writes the final text answer (`stop_reason: "end_turn"`). The loop stops after `MAX_TOOL_ROUNDS = 20` rounds at most.
+
+#### Tips for good tool choices
+
+- **Descriptions do the steering.** Claude only knows a tool through its `name`, `description` and argument descriptions. Say what the tool does and when to use it; a vague description leads to wrong or missed calls.
+- **The prompt helps too.** `DocAgent` lists the available document IDs and says that a document already included doesn't need a tool. That's why Claude skips `read_doc` for `@`-mentioned documents.
+- **Extra servers just work.** Tools from `--server` scripts join the same menu and the same `routes` map, so Claude can use them with no code changes. On a name clash, the first server's tool is used.
 
 ## Requirements
 
