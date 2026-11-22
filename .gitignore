@@ -1,13 +1,53 @@
 # Python-generated files
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+*.egg
 
 # Virtual environments
-.venv
+.venv/
+venv/
+env/
 
 # Secrets / local config
 .env
+.env.*
+!.env.example
+
+# Test, lint and type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Claude Code: personal settings (shared .claude/settings.json stays tracked)
+.claude/settings.local.json
+
+# Node (MCP Inspector via npx, if a local install is ever made)
+node_modules/
+
+# IDEs / editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
