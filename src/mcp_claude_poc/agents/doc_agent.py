@@ -3,22 +3,22 @@ from typing import Any
 from mcp.types import Prompt, PromptMessage
 
 from mcp_claude_poc.client.mcp_client import MCPClient
-from mcp_claude_poc.core.chat import Chat
-from mcp_claude_poc.agents.claude_agent import ClaudeAgent
+from mcp_claude_poc.agents.base_agent import Agent
+from mcp_claude_poc.core.claude_client import ClaudeClient
 
 
-class CliChat(Chat):
+class DocAgent(Agent):
     """
-    CLI chat interface for interacting with the MCP agent (CustomClaude).
+    Document agent: the Agent tool-use loop plus document features.
     Handles commands, document mentions, and prompt execution.
     """
     def __init__(
         self,
         doc_client: MCPClient,
         clients: dict[str, MCPClient],
-        claude_service: ClaudeAgent,
+        claude_client: ClaudeClient,
     ):
-        super().__init__(clients=clients, claude_service=claude_service)
+        super().__init__(clients=clients, claude_client=claude_client)
         self.doc_client: MCPClient = doc_client
 
     # Prompts exposed by the document server (used for /commands)
@@ -101,19 +101,19 @@ class CliChat(Chat):
         added_resources = await self._extract_resources(query)
 
         prompt = f"""The user has a question:
-<query>
-{query}
-</query>
+        <query>
+        {query}
+        </query>
 
-The following context may be useful in answering their question:
-<context>
-{added_resources}
-</context>
+        The following context may be useful in answering their question:
+        <context>
+        {added_resources}
+        </context>
 
-The user's query may mention documents like "@report.docx". The "@" only marks the mention; \
-the document's actual name is "report.docx". If a document's content is already included \
-above, you don't need a tool to read it.
-Answer the user's question directly and concisely, starting with the exact information they need. \
-Don't refer to the provided context; just use it to inform your answer."""
+        The user's query may mention documents like "@report.docx". The "@" only marks the mention; \
+        the document's actual name is "report.docx". If a document's content is already included \
+        above, you don't need a tool to read it.
+        Answer the user's question directly and concisely, starting with the exact information they need. \
+        Don't refer to the provided context; just use it to inform your answer."""
 
         self.messages.append({"role": "user", "content": prompt})

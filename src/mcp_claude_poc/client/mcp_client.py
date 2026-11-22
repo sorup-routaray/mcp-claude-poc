@@ -52,6 +52,7 @@ class MCPClient:
         self._session = None
         self._exit_stack = None
 
+    
     async def __aenter__(self):
         try:
             await self.connect()

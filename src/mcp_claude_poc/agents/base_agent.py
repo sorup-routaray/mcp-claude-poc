@@ -4,20 +4,22 @@ from typing import Any
 from mcp import MCPError, types
 
 from mcp_claude_poc.client.mcp_client import MCPClient
-from mcp_claude_poc.agents.claude_agent import ClaudeAgent
+from mcp_claude_poc.core.claude_client import ClaudeClient
 
 # Upper bound on Claude <-> tool round trips for a single user query, so a
 # misbehaving tool loop can't run (and bill) forever.
 MAX_TOOL_ROUNDS = 20
 
 
-class Chat:
+class Agent:
+    """Tool-use agent loop: Claude picks MCP tools, the agent runs them and
+    feeds the results back until Claude has a final answer."""
     def __init__(
         self,
-        claude_service: ClaudeAgent,
+        claude_client: ClaudeClient,
         clients: dict[str, MCPClient],
     ):
-        self.claude_service: ClaudeAgent = claude_service
+        self.claude_client: ClaudeClient = claude_client
         self.clients: dict[str, MCPClient] = clients
         # Holds SDK param dicts and, for assistant turns, SDK content blocks.
         self.messages: list[dict[str, Any]] = []
@@ -87,8 +89,8 @@ class Chat:
         tools, routes = await self._collect_tools()
 
         for _ in range(MAX_TOOL_ROUNDS):
-            response = await self.claude_service.send_message(self.messages, tools=tools)
-            self.claude_service.add_message(self.messages, response, "assistant")
+            response = await self.claude_client.send_message(self.messages, tools=tools)
+            self.claude_client.add_message(self.messages, response, "assistant")
 
             if response.stop_reason == "tool_use":
                 self.messages.append(
@@ -96,7 +98,7 @@ class Chat:
                 )
                 continue
 
-            text = self.claude_service.text_from_message(response)
+            text = self.claude_client.text_from_message(response)
             if response.stop_reason == "refusal":
                 category = response.stop_details.category if response.stop_details else None
                 return f"[Claude declined this request (category: {category})]"

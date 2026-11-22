@@ -1,4 +1,4 @@
-# Core module for interacting with the Claude API via the Anthropic SDK (anthropic 2.x).
+# Client for the Claude API via the Anthropic SDK (anthropic 2.x).
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -10,14 +10,14 @@ from anthropic.types.beta import BetaMessage
 FALLBACK_MODELS = {
     "claude-opus-5-5",
     "claude-opus-5",
-    "claude-sonnet-5-5"   
+    "claude-sonnet-5-5",
 }
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
-class ClaudeAgent:
+class ClaudeClient:
     """
-    Agent for interacting with the Claude API via the Anthropic SDK.
+    Client for the Claude API via the Anthropic SDK.
     Handles message construction, sending, and response parsing.
     """
     def __init__(

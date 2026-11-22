@@ -8,7 +8,7 @@ from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.document import Document
 from prompt_toolkit.buffer import Buffer
 
-from mcp_claude_poc.core.cli_chat import CliChat
+from mcp_claude_poc.agents.doc_agent import DocAgent
 
 
 class CommandAutoSuggest(AutoSuggest):
@@ -124,12 +124,12 @@ class UnifiedCompleter(Completer):
             
 class CliApp:
     """
-    CLI application for interacting with the agent(CliChat).
+    CLI application for interacting with the agent (DocAgent).
 
     Handles user input, autocompletion, and command execution.        
     """
 
-    def __init__(self, agent: CliChat):
+    def __init__(self, agent: DocAgent):
         # Initialize the CLI application with the given agent.
         self.agent = agent
         # Initialize the resources for autocompletion.

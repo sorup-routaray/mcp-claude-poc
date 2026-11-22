@@ -14,8 +14,8 @@ from pathlib import Path
 from mcp_claude_poc import config
 from mcp_claude_poc.client.mcp_client import MCPClient
 from mcp_claude_poc.core.cli import CliApp
-from mcp_claude_poc.core.cli_chat import CliChat
-from mcp_claude_poc.agents.claude_agent import ClaudeAgent
+from mcp_claude_poc.agents.doc_agent import DocAgent
+from mcp_claude_poc.core.claude_client import ClaudeClient
 
 # Resolve paths from this file (not the current working directory).
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -66,7 +66,7 @@ async def main(args: list[str] | None = None) -> None:
     """Configure the app, start every MCP server, and run the chat."""
     validate_env(args)
 
-    claude_service = ClaudeAgent(config.MODEL, max_tokens=config.MAX_TOKENS, effort=config.EFFORT)
+    claude_client = ClaudeClient(config.MODEL, max_tokens=config.MAX_TOKENS, effort=config.EFFORT)
 
     # Validate every script before spawning any subprocess, so a typo fails
     # fast. Duplicates are dropped so the same server isn't launched twice.
@@ -96,13 +96,13 @@ async def main(args: list[str] | None = None) -> None:
                 MCPClient(command=command, args=[*base_args, str(script)], cwd=PROJECT_ROOT)
             )
 
-        chat = CliChat(doc_client=doc_client, clients=clients, claude_service=claude_service)
+        agent = DocAgent(doc_client=doc_client, clients=clients, claude_client=claude_client)
 
         if config.QUERY:
-            print(await chat.run(config.QUERY))
+            print(await agent.run(config.QUERY))
             return
 
-        cli = CliApp(chat)
+        cli = CliApp(agent)
         await cli.initialize()
         await cli.run()
 
