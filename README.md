@@ -139,7 +139,7 @@ A thin async wrapper around the Anthropic SDK. It makes **one** Messages API cal
 
 ```python
 response = await claude_client.send_message(messages, system="...", tools=tools)
-claude_client.add_message(messages, response, "assistant")   # keeps thinking/tool_use blocks
+messages.append({"role": "assistant", "content": response.content})   # keep thinking/tool_use blocks
 print(claude_client.text_from_message(response))
 ```
 
@@ -147,7 +147,6 @@ print(claude_client.text_from_message(response))
 | --- | --- |
 | `__init__(model, max_tokens=16000, effort=None)` | Creates an `AsyncAnthropic` client (key from `ANTHROPIC_API_KEY`) |
 | `send_message(messages, system=None, stop_sequences=None, tools=None)` | Calls `client.beta.messages.stream` and returns the final message (streaming, so large `max_tokens` values work). Sends optional params only when set; adds `output_config.effort` if `effort` is set; adds the refusal fallback for models in `FALLBACK_MODELS` |
-| `add_message(messages, message, role)` | Appends a turn. For a `BetaMessage` it keeps the full `content` list, which the API requires on the next request |
 | `text_from_message(message)` | Joins the `text` blocks of a response |
 
 ### Agent loop (`Agent.run`)

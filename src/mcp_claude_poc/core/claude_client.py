@@ -41,17 +41,6 @@ class ClaudeClient:
         # Credentials are resolved from the environment (ANTHROPIC_API_KEY, ...).
         self.client = AsyncAnthropic()
 
-    # Appends an assistant/user turn. For a model response the full content
-    # list is kept (text, tool_use, thinking blocks, ...): thinking blocks must
-    # be sent back unchanged on later requests.
-    def add_message(self, messages: list, message: BetaMessage | str, role: str) -> None:
-        messages.append(
-            {
-                "role": role,
-                "content": message.content if isinstance(message, BetaMessage) else str(message),
-            }
-        )
-
     # Extracts the text content from a message object.
     def text_from_message(self, message: BetaMessage) -> str:
         return "\n".join(block.text for block in message.content if block.type == "text")
