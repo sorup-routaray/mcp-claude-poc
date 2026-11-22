@@ -3,10 +3,65 @@
 A command-line chat app where **Claude** answers questions about a small set of documents served by an **MCP (Model Context Protocol) server**.
 
 ```text
-you ──> CLI (prompt_toolkit) ──> DocAgent loop ──> Claude API (ClaudeClient)
-                                     │  ▲
-                          tool calls ▼  │ tool results
-                                 MCPClient ──stdio──> DocumentMCP server
+┌──────────────────────┐
+│         You          │
+└──────────────────────┘
+      │          ▲
+      │ question │ answer
+      ▼          │
+┌──────────────────────┐
+│ CLI (prompt_toolkit) │
+└──────────────────────┘
+      │          ▲
+      │ query    │ answer
+      ▼          │
+┌──────────────────────┐   1. messages + tools    ┌──────────────┐  HTTPS  ┌────────────┐
+│       DocAgent       │ ───────────────────────> │ ClaudeClient │ ──────> │ Claude API │
+│   (tool-use loop)    │ <─────────────────────── │              │ <────── │            │
+└──────────────────────┘   2. tool_use or text    └──────────────┘         └────────────┘
+      │          ▲
+      │ 3. call  │ 4. tool
+      │    tool  │    result
+      ▼          │
+┌──────────────────────┐
+│      MCPClient       │
+└──────────────────────┘
+      │          ▲
+      │  stdio   │
+      │ JSON-RPC │
+      ▼          │
+┌──────────────────────┐
+│  DocumentMCP server  │
+│    (subprocess)      │
+└──────────────────────┘
+```
+
+DocAgent sits in the middle. Claude never talks to the MCP server directly: it only *asks* for a tool call (`tool_use`), DocAgent runs it through `MCPClient`, and sends the result back to Claude. This repeats until Claude replies with text.
+
+One question, step by step:
+
+```mermaid
+sequenceDiagram
+    actor You
+    participant CLI as CLI (prompt_toolkit)
+    participant Agent as DocAgent
+    participant Claude as ClaudeClient → Claude API
+    participant MCP as MCPClient → DocumentMCP server
+
+    You->>CLI: "Summarize @report.pdf"
+    CLI->>Agent: run(query)
+    Agent->>MCP: read @mentioned docs + list tools
+    MCP-->>Agent: document content, tools (read_doc, write_doc)
+    Agent->>Claude: 1. messages + tools
+    loop while Claude asks for a tool (max 20 rounds)
+        Claude-->>Agent: 2. tool_use (e.g. read_doc)
+        Agent->>MCP: 3. call_tool("read_doc", {doc_id})
+        MCP-->>Agent: 4. tool result
+        Agent->>Claude: tool_result + full history
+    end
+    Claude-->>Agent: 2. text answer (stop_reason end_turn)
+    Agent-->>CLI: answer
+    CLI-->>You: prints the response
 ```
 
 | Part | File | What it does |
@@ -23,10 +78,12 @@ you ──> CLI (prompt_toolkit) ──> DocAgent loop ──> Claude API (Claud
 2. [Agent](#agent)
    - [`ClaudeClient`](#claudeclient)
    - [Agent loop (`Agent.run`)](#agent-loop-agentrun)
+   - [How Claude chooses a tool](#how-claude-chooses-a-tool)
 3. [Requirements](#requirements)
    - [Without uv (plain pip)](#without-uv-plain-pip)
 4. [Configuration](#configuration)
 5. [Usage](#usage)
+   - [How `@` completion finds document names](#how--completion-finds-document-names)
 6. [Run each component](#run-each-component)
    - [1. Chat app (client + Claude + server)](#1-chat-app-client--claude--server)
    - [2. MCP server only](#2-mcp-server-only)
@@ -82,7 +139,7 @@ A thin async wrapper around the Anthropic SDK. It makes **one** Messages API cal
 
 ```python
 response = await claude_client.send_message(messages, system="...", tools=tools)
-claude_client.add_message(messages, response, "assistant")   # keeps thinking/tool_use blocks
+messages.append({"role": "assistant", "content": response.content})   # keep thinking/tool_use blocks
 print(claude_client.text_from_message(response))
 ```
 
@@ -90,7 +147,6 @@ print(claude_client.text_from_message(response))
 | --- | --- |
 | `__init__(model, max_tokens=16000, effort=None)` | Creates an `AsyncAnthropic` client (key from `ANTHROPIC_API_KEY`) |
 | `send_message(messages, system=None, stop_sequences=None, tools=None)` | Calls `client.beta.messages.stream` and returns the final message (streaming, so large `max_tokens` values work). Sends optional params only when set; adds `output_config.effort` if `effort` is set; adds the refusal fallback for models in `FALLBACK_MODELS` |
-| `add_message(messages, message, role)` | Appends a turn. For a `BetaMessage` it keeps the full `content` list, which the API requires on the next request |
 | `text_from_message(message)` | Joins the `text` blocks of a response |
 
 ### Agent loop (`Agent.run`)
@@ -107,8 +163,123 @@ user query ──> _process_query()            # DocAgent: @mentions inlined, /p
 
 - **Max rounds:** `MAX_TOOL_ROUNDS = 20` tool round trips per question, so a runaway loop can't run (and bill) forever.
 - **Multiple servers:** tools from every `--server` are offered to Claude. On a name clash, the first server wins.
-- **Tool errors** (unknown tool, `MCPError`) go back to Claude as `tool_result` with `is_error: true`, so it can recover instead of crashing.
+- **Tool errors** (unknown tool, `MCPError`) go back to Claude as `tool_result` with `is_error: true`, so it can recover instead of crashing. A dead MCP server fails the turn with a `ConnectionError` instead.
 - **Memory:** the conversation (`Agent.messages`) lives for the whole chat session, in memory only.
+
+### How Claude chooses a tool
+
+Claude **never runs a tool itself**. Your app sends it a menu of tools with every request; Claude reads the menu, decides whether a tool would help, and if so replies with a structured `tool_use` block saying *which* tool and *with what arguments*. Your code makes the actual call and sends the result back.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Server as DocumentMCP server
+    participant MCP as MCPClient
+    participant Agent as Agent / DocAgent
+    participant Claude as Claude API
+
+    Note over Agent: _collect_tools()
+    Agent->>MCP: list_tools()
+    MCP->>Server: tools/list (JSON-RPC over stdio)
+    Server-->>MCP: read_doc, write_doc (name, description, input schema)
+    MCP-->>Agent: tools
+    Note over Agent: Convert to Claude's tool format<br/>and build routes: tool name → MCPClient
+
+    Agent->>Claude: messages + tools (the "menu")
+    Note over Claude: Reads the question, the history<br/>and every tool's name + description,<br/>then decides (tool_choice: auto)
+
+    alt Claude needs a tool
+        Claude-->>Agent: stop_reason "tool_use"<br/>tool_use {id, name: "read_doc", input: {doc_id: "spec.txt"}}
+        Note over Agent: _run_tools(): routes["read_doc"] → MCPClient
+        Agent->>MCP: call_tool("read_doc", {doc_id: "spec.txt"})
+        MCP->>Server: tools/call
+        Server-->>MCP: document text
+        MCP-->>Agent: CallToolResult
+        Agent->>Claude: tool_result {tool_use_id: same id, content: document text}
+        Note over Claude: Reads the result, then either asks<br/>for another tool or answers
+    else Claude can answer already
+        Claude-->>Agent: stop_reason "end_turn" + text answer
+    end
+```
+
+#### Step 1: the app sends Claude a menu of tools
+
+Before calling Claude, `Agent._collect_tools()` (`agents/base_agent.py`) asks every MCP server for its tools and converts each one to the Claude API format. The names and descriptions come straight from the `@mcp.tool(...)` decorators in `server/mcp_server.py`:
+
+```json
+"tools": [
+  {
+    "name": "read_doc",
+    "description": "Read the contents of a document by its ID.",
+    "input_schema": {
+      "type": "object",
+      "properties": { "doc_id": { "type": "string", "description": "The ID of the document to read." } },
+      "required": ["doc_id"]
+    }
+  },
+  {
+    "name": "write_doc",
+    "description": "Edit a document by replacing old_string with new_string.",
+    "input_schema": { "...": "doc_id, old_string, new_string" }
+  }
+]
+```
+
+This list is sent with **every** request: `send_message(self.messages, tools=tools)`.
+
+#### Step 2: Claude decides
+
+Claude reads the question, the conversation so far and each tool's name, description and argument descriptions. By default the API lets Claude decide (`tool_choice: auto`); the code doesn't force a tool.
+
+| Question | What Claude does | Why |
+| --- | --- | --- |
+| `Summarize @report.pdf` | Answers with text | The document was already inlined by the `@` mention |
+| `What's in spec.txt?` | Calls `read_doc` | It needs the content, and `read_doc` "reads the contents of a document" |
+| `Fix the typo in plan.md` | Calls `read_doc`, then `write_doc` | It must see the text before it can replace part of it |
+| `What is MCP?` | Answers with text | No document is needed |
+
+#### Step 3: Claude's reply names the tool
+
+```json
+{
+  "stop_reason": "tool_use",
+  "content": [
+    { "type": "text", "text": "I'll read the spec first." },
+    { "type": "tool_use", "id": "toolu_01A...", "name": "read_doc", "input": { "doc_id": "spec.txt" } }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Which tool to run |
+| `input` | The arguments, shaped by that tool's `input_schema` |
+| `id` | Links the result back to this exact call |
+
+One reply can contain several `tool_use` blocks.
+
+#### Step 4: the app routes the call and returns the result
+
+`_collect_tools()` also builds `routes`, a map from tool name to the `MCPClient` that owns it. `_run_tools()` looks up `routes[block.name]`, calls `client.call_tool("read_doc", {"doc_id": "spec.txt"})`, and sends the result back with the **same id**. All results for one reply go back together in a single message:
+
+```json
+{
+  "role": "user",
+  "content": [
+    { "type": "tool_result", "tool_use_id": "toolu_01A...", "content": "...document text..." }
+  ]
+}
+```
+
+#### Step 5: repeat until Claude answers
+
+Claude reads the result and either asks for another tool (back to step 3) or writes the final text answer (`stop_reason: "end_turn"`). The loop stops after `MAX_TOOL_ROUNDS = 20` rounds at most.
+
+#### Tips for good tool choices
+
+- **Descriptions do the steering.** Claude only knows a tool through its `name`, `description` and argument descriptions. Say what the tool does and when to use it; a vague description leads to wrong or missed calls.
+- **The prompt helps too.** `DocAgent` lists the available document IDs and says that a document already included doesn't need a tool. That's why Claude skips `read_doc` for `@`-mentioned documents.
+- **Extra servers just work.** Tools from `--server` scripts join the same menu and the same `routes` map, so Claude can use them with no code changes. On a name clash, the first server's tool is used.
 
 ## Requirements
 
@@ -189,6 +360,93 @@ Inside the chat:
 
 Available documents: `deposition.md`, `report.pdf`, `financials.docx`, `outlook.pdf`, `plan.md`, `spec.txt`.
 They live in memory, so `write_doc` edits are lost when the app exits.
+
+### How `@` completion finds document names
+
+The CLI fetches the document names **once at startup** and keeps them in memory. Typing `@` filters that saved list locally; there is no server call per keystroke.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor You
+    participant CLI as CliApp + UnifiedCompleter<br/>(core/cli.py)
+    participant Agent as DocAgent
+    participant MCP as MCPClient
+    participant Server as DocumentMCP server
+
+    Note over CLI: Startup: cli.initialize() → refresh_resources()
+    CLI->>Agent: list_docs_ids()
+    Agent->>MCP: read_resource("docs://documents")
+    MCP->>Server: resources/read (JSON-RPC over stdio)
+    Server-->>MCP: list_docs() → JSON list of IDs
+    MCP-->>Agent: ["deposition.md", "report.pdf", ...]
+    Agent-->>CLI: document IDs
+    Note over CLI: Saved: completer.update_resources(ids)
+
+    You->>CLI: types "Summarize @"
+    Note over CLI: "@" key binding → start_completion()
+    CLI-->>You: menu with all 6 documents
+    You->>CLI: types "re"
+    Note over CLI: get_completions(): prefix "re"<br/>filters the saved list (no server call)
+    CLI-->>You: menu: report.pdf
+    You->>CLI: picks report.pdf, presses Enter
+    Note over Agent: Only now is the content read:<br/>_extract_resources() → docs://documents/report.pdf
+```
+
+#### Step 1: the list is fetched once, at startup
+
+`main.py` calls `await cli.initialize()`, which runs `refresh_resources()` (`core/cli.py`):
+
+```python
+self.resources = await self.agent.list_docs_ids()     # DocAgent
+self.completer.update_resources(self.resources)       # saved in the completer
+```
+
+The request goes through the same layers as a tool call:
+
+```text
+CliApp.refresh_resources()
+  → DocAgent.list_docs_ids()                       agents/doc_agent.py
+    → MCPClient.read_resource("docs://documents")  client/mcp_client.py
+      → resources/read (JSON-RPC over stdio)
+        → list_docs() in the DocumentMCP server   server/mcp_server.py
+        ← ["deposition.md", "report.pdf", ...]  (as JSON)
+      ← mime_type is application/json → json.loads → Python list
+```
+
+This is an MCP **resource**, not a tool: your code reads it directly, and Claude isn't involved.
+
+#### Step 2: typing `@` opens the menu
+
+A key binding for `@` inserts the character and calls `buffer.start_completion(...)` straight away, so the menu appears before you type anything else.
+
+#### Step 3: the completer filters the saved list
+
+`UnifiedCompleter.get_completions()`:
+
+1. finds the last `@` before the cursor and takes the text after it as the prefix;
+2. returns every saved document name that starts with that prefix (case-insensitive);
+3. uses `start_position=-len(prefix)`, so the name you pick replaces what you've typed.
+
+```text
+> Summarize @          prefix ""    → menu: all 6 documents
+> Summarize @re        prefix "re"  → menu: report.pdf
+```
+
+#### Step 4: the menu narrows as you type
+
+`complete_while_typing=True` reruns the completer on every keystroke, still against the saved list. `complete_in_thread=True` runs it in the background so typing doesn't lag.
+
+The same saved list feeds `/command` completion too: after `/summarize `, the menu shows document IDs.
+
+#### Good to know
+
+| Topic | Detail |
+| --- | --- |
+| **No refresh during a session** | The list is loaded once. That's fine here because the server's documents are fixed (`write_doc` changes content, not names). If a server can add documents, call `refresh_resources()` again, for example after each answer |
+| **Completion only helps you type** | It loads no content. Content is fetched when you press Enter: `DocAgent._extract_resources()` finds the `@` mentions (`MENTION_RE`) and reads each document from `docs://documents/{doc_id}` |
+| **If loading fails at startup** | You see `Error refreshing resources: ...` and the `@` menu stays empty. The chat still works, and Claude can still read documents with `read_doc` |
+| **Small quirk** | The completer uses the *last* `@` before the cursor. After `@report.pdf and more`, the prefix is `report.pdf and more`, which matches nothing, so no menu appears. Harmless |
 
 ## Run each component
 
@@ -389,6 +647,9 @@ mcp-claude-poc/
     │   ├── base_agent.py     # Agent: tool-use loop (Claude <-> MCP tools)
     │   └── doc_agent.py      # DocAgent(Agent): @mentions and /prompt commands
     ├── client/mcp_client.py
+    ├── constants/
+    │   ├── __init__.py       # re-exports: from mcp_claude_poc.constants import ROLE_USER
+    │   └── roles.py          # ROLE_USER, ROLE_ASSISTANT, Role type
     ├── core/
     │   ├── claude_client.py  # ClaudeClient: Claude API wrapper
     │   └── cli.py            # interactive prompt UI with completion
