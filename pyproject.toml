@@ -1,0 +1,23 @@
+[project]
+name = "mcp-claude-poc"
+version = "0.1.0"
+description = "Claude-powered CLI chat that uses tools, resources and prompts from an MCP server"
+readme = "README.md"
+authors = [
+    { name = "Sorup Routaray", email = "sorup1984@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "anthropic>=2.12.0,<3",
+    "mcp[cli]>=2.3.0,<3",
+    "python-dotenv>=1.2.4",
+    "prompt-toolkit>=3.0.51",
+]
+
+[project.scripts]
+mcp-claude-poc = "mcp_claude_poc.main:run"
+mcp-claude-poc-server = "mcp_claude_poc.server.mcp_server:main"
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
