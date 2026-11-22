@@ -134,6 +134,9 @@ class Agent:
         await self._process_query(query)
         tools, routes = await self._collect_tools()
 
+        # Iterate through tool-call rounds, sending the conversation history
+        # to Claude and handling tool_use blocks until either a final answer
+        # is produced or the maximum number of rounds is reached.
         for _ in range(MAX_TOOL_ROUNDS):
             response = await self.claude_client.send_message(self.messages, tools=tools)
             self.claude_client.add_message(self.messages, response, "assistant")

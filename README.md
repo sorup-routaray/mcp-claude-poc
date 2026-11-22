@@ -83,6 +83,7 @@ sequenceDiagram
    - [Without uv (plain pip)](#without-uv-plain-pip)
 4. [Configuration](#configuration)
 5. [Usage](#usage)
+   - [How `@` completion finds document names](#how--completion-finds-document-names)
 6. [Run each component](#run-each-component)
    - [1. Chat app (client + Claude + server)](#1-chat-app-client--claude--server)
    - [2. MCP server only](#2-mcp-server-only)
@@ -360,6 +361,93 @@ Inside the chat:
 
 Available documents: `deposition.md`, `report.pdf`, `financials.docx`, `outlook.pdf`, `plan.md`, `spec.txt`.
 They live in memory, so `write_doc` edits are lost when the app exits.
+
+### How `@` completion finds document names
+
+The CLI fetches the document names **once at startup** and keeps them in memory. Typing `@` filters that saved list locally; there is no server call per keystroke.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor You
+    participant CLI as CliApp + UnifiedCompleter<br/>(core/cli.py)
+    participant Agent as DocAgent
+    participant MCP as MCPClient
+    participant Server as DocumentMCP server
+
+    Note over CLI: Startup: cli.initialize() → refresh_resources()
+    CLI->>Agent: list_docs_ids()
+    Agent->>MCP: read_resource("docs://documents")
+    MCP->>Server: resources/read (JSON-RPC over stdio)
+    Server-->>MCP: list_docs() → JSON list of IDs
+    MCP-->>Agent: ["deposition.md", "report.pdf", ...]
+    Agent-->>CLI: document IDs
+    Note over CLI: Saved: completer.update_resources(ids)
+
+    You->>CLI: types "Summarize @"
+    Note over CLI: "@" key binding → start_completion()
+    CLI-->>You: menu with all 6 documents
+    You->>CLI: types "re"
+    Note over CLI: get_completions(): prefix "re"<br/>filters the saved list (no server call)
+    CLI-->>You: menu: report.pdf
+    You->>CLI: picks report.pdf, presses Enter
+    Note over Agent: Only now is the content read:<br/>_extract_resources() → docs://documents/report.pdf
+```
+
+#### Step 1: the list is fetched once, at startup
+
+`main.py` calls `await cli.initialize()`, which runs `refresh_resources()` (`core/cli.py`):
+
+```python
+self.resources = await self.agent.list_docs_ids()     # DocAgent
+self.completer.update_resources(self.resources)       # saved in the completer
+```
+
+The request goes through the same layers as a tool call:
+
+```text
+CliApp.refresh_resources()
+  → DocAgent.list_docs_ids()                       agents/doc_agent.py
+    → MCPClient.read_resource("docs://documents")  client/mcp_client.py
+      → resources/read (JSON-RPC over stdio)
+        → list_docs() in the DocumentMCP server   server/mcp_server.py
+        ← ["deposition.md", "report.pdf", ...]  (as JSON)
+      ← mime_type is application/json → json.loads → Python list
+```
+
+This is an MCP **resource**, not a tool: your code reads it directly, and Claude isn't involved.
+
+#### Step 2: typing `@` opens the menu
+
+A key binding for `@` inserts the character and calls `buffer.start_completion(...)` straight away, so the menu appears before you type anything else.
+
+#### Step 3: the completer filters the saved list
+
+`UnifiedCompleter.get_completions()`:
+
+1. finds the last `@` before the cursor and takes the text after it as the prefix;
+2. returns every saved document name that starts with that prefix (case-insensitive);
+3. uses `start_position=-len(prefix)`, so the name you pick replaces what you've typed.
+
+```text
+> Summarize @          prefix ""    → menu: all 6 documents
+> Summarize @re        prefix "re"  → menu: report.pdf
+```
+
+#### Step 4: the menu narrows as you type
+
+`complete_while_typing=True` reruns the completer on every keystroke, still against the saved list. `complete_in_thread=True` runs it in the background so typing doesn't lag.
+
+The same saved list feeds `/command` completion too: after `/summarize `, the menu shows document IDs.
+
+#### Good to know
+
+| Topic | Detail |
+| --- | --- |
+| **No refresh during a session** | The list is loaded once. That's fine here because the server's documents are fixed (`write_doc` changes content, not names). If a server can add documents, call `refresh_resources()` again, for example after each answer |
+| **Completion only helps you type** | It loads no content. Content is fetched when you press Enter: `DocAgent._extract_resources()` finds the `@` mentions (`MENTION_RE`) and reads each document from `docs://documents/{doc_id}` |
+| **If loading fails at startup** | You see `Error refreshing resources: ...` and the `@` menu stays empty. The chat still works, and Claude can still read documents with `read_doc` |
+| **Small quirk** | The completer uses the *last* `@` before the cursor. After `@report.pdf and more`, the prefix is `report.pdf and more`, which matches nothing, so no menu appears. Harmless |
 
 ## Run each component
 
