@@ -24,8 +24,12 @@ class ClaudeClient:
             self,           
             # Model to use for the Claude API requests.
             model: str, 
-            # Maximum number of tokens to generate in the response.
-            max_tokens: int = 1024, 
+            # Maximum number of tokens to generate in the response. Thinking
+            # is always on for current models and counts toward this limit,
+            # so a small value (e.g. 1024) cuts answers off. 16000 matches the
+            # MAX_TOKENS default in config.py; requests stream, so higher
+            # values (up to the model's 128K output cap) work too.
+            max_tokens: int = 16000,
             # Effort level for the model's output generation.
             effort: str | None = None
         ):
@@ -88,4 +92,15 @@ class ClaudeClient:
         # Thinking is not configured explicitly: current models (Opus 5.5,
         # Sonnet 5.5, Fable 5.x) run adaptive thinking by default and reject
         # the old {"type": "enabled", "budget_tokens": N} form with a 400.
-        return await self.client.beta.messages.create(betas=betas, **params)
+        #
+        # Streaming instead of `messages.create()`: for a non-streaming call the
+        # SDK estimates how long the response could take from `max_tokens`, and
+        # above ~21,333 tokens it refuses the request up front ("Streaming is
+        # required for operations that may take longer than 10 minutes").
+        # Streaming has no such limit, so any --max-tokens value (up to the
+        # model's 128K output cap) works. We don't show tokens as they arrive:
+        # get_final_message() waits for the end of the stream and returns the
+        # same BetaMessage that create() would have returned, so callers don't
+        # change.
+        async with self.client.beta.messages.stream(betas=betas, **params) as stream:
+            return await stream.get_final_message()

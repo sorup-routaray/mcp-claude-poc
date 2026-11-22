@@ -23,7 +23,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
 # Thinking is always on for current models and counts toward max_tokens,
 # so a small value (e.g. 1024) truncates answers. 16000 is a safe default.
-MAX_TOKENS = _env_int("MAX_TOKENS", 1024)
+MAX_TOKENS = _env_int("MAX_TOKENS", 16000)
 # Optional: low | medium | high | xhigh | max (Opus 5.5 defaults to medium).
 EFFORT = os.getenv("CLAUDE_EFFORT") or None
 # Launch MCP servers with `uv run` instead of the current Python interpreter.
