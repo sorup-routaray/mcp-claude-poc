@@ -639,6 +639,8 @@ The first run asks to install the `@modelcontextprotocol/inspector` npm package.
 mcp-claude-poc/
 ├── .env.example            # template for .env
 ├── pyproject.toml          # deps + console scripts
+├── scripts/
+│   └── build_wiki.py       # builds the GitHub Wiki from this README (--push publishes it)
 ├── uv.lock
 └── src/mcp_claude_poc/
     ├── main.py             # entry point (console script: mcp-claude-poc)
