@@ -4,7 +4,7 @@ from mcp.types import Prompt, PromptMessage
 
 from mcp_claude_poc.client.mcp_client import MCPClient
 from mcp_claude_poc.core.chat import Chat
-from mcp_claude_poc.core.custom_claude import ClaudeAgent
+from mcp_claude_poc.agents.claude_agent import ClaudeAgent
 
 
 class CliChat(Chat):

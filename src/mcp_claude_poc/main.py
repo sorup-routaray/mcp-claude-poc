@@ -15,7 +15,7 @@ from mcp_claude_poc import config
 from mcp_claude_poc.client.mcp_client import MCPClient
 from mcp_claude_poc.core.cli import CliApp
 from mcp_claude_poc.core.cli_chat import CliChat
-from mcp_claude_poc.core.custom_claude import ClaudeAgent
+from mcp_claude_poc.agents.claude_agent import ClaudeAgent
 
 # Resolve paths from this file (not the current working directory).
 PACKAGE_DIR = Path(__file__).resolve().parent
