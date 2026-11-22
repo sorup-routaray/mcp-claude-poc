@@ -647,6 +647,9 @@ mcp-claude-poc/
     │   ├── base_agent.py     # Agent: tool-use loop (Claude <-> MCP tools)
     │   └── doc_agent.py      # DocAgent(Agent): @mentions and /prompt commands
     ├── client/mcp_client.py
+    ├── constants/
+    │   ├── __init__.py       # re-exports: from mcp_claude_poc.constants import ROLE_USER
+    │   └── roles.py          # ROLE_USER, ROLE_ASSISTANT, Role type
     ├── core/
     │   ├── claude_client.py  # ClaudeClient: Claude API wrapper
     │   └── cli.py            # interactive prompt UI with completion

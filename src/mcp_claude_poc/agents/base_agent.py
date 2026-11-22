@@ -5,6 +5,7 @@ import anyio
 from mcp import MCPError, types
 
 from mcp_claude_poc.client.mcp_client import MCPClient
+from mcp_claude_poc.constants import ROLE_ASSISTANT, ROLE_USER, Role
 from mcp_claude_poc.core.claude_client import ClaudeClient
 
 # Upper bound on Claude <-> tool round trips for a single user query, so a
@@ -39,12 +40,12 @@ class Agent:
     #     needs these as blocks; converting them to text breaks the next
     #     request, and thinking blocks must be sent back unchanged.
     # History is append-only: earlier turns are never edited or removed.
-    def _add(self, role: str, content: Any) -> None:
+    def _add(self, role: Role, content: Any) -> None:
         self.messages.append({"role": role, "content": content})
 
     # Subclasses turn the raw query into one or more user messages.
     async def _process_query(self, query: str) -> None:
-        self._add("user", query)
+        self._add(ROLE_USER, query)
 
     # Collect tools from every MCP server, in Anthropic tool format, plus a
     # name -> client map used to route tool calls back to the right server.
@@ -140,7 +141,7 @@ class Agent:
             if block.type == "tool_use"
         ]
         if results:
-            self._add("user", results)
+            self._add(ROLE_USER, results)
 
     async def run(self, query: str) -> str:
         await self._process_query(query)
@@ -153,7 +154,7 @@ class Agent:
             response = await self.claude_client.send_message(self.messages, tools=tools)
             # Keep the full content list (text, tool_use, thinking blocks, ...),
             # not just the text: the API requires it on the next request.
-            self._add("assistant", response.content)
+            self._add(ROLE_ASSISTANT, response.content)
 
             if response.stop_reason == "tool_use":
                 try:
@@ -165,7 +166,7 @@ class Agent:
                     self._close_unrun_tools(response, "the tool call failed before completing.")
                     raise
                 # All tool_result blocks for this turn, as blocks, in one message.
-                self._add("user", tool_results)
+                self._add(ROLE_USER, tool_results)
                 continue
 
             text = self.claude_client.text_from_message(response)
