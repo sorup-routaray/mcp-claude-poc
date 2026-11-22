@@ -11,6 +11,7 @@ from mcp.types import Prompt, PromptMessage
 MENTION_RE = re.compile(r"(?<![\w@])@([\w.\-]+)")
 
 from mcp_claude_poc.client.mcp_client import MCPClient
+from mcp_claude_poc.constants import ROLE_ASSISTANT, ROLE_USER
 from mcp_claude_poc.agents.base_agent import Agent
 from mcp_claude_poc.core.claude_client import ClaudeClient
 
@@ -96,7 +97,8 @@ class DocAgent(Agent):
             raise ValueError(f"Usage: /{command} <doc_id>")
 
         messages = await self.doc_client.get_prompt(command, {"doc_id": words[1]})
-        self.messages += self.convert_prompt_messages_to_message_params(messages)
+        for message in self.convert_prompt_messages_to_message_params(messages):
+            self._add(message["role"], message["content"])
         return True
 
     def convert_prompt_messages_to_message_params(
@@ -111,7 +113,7 @@ class DocAgent(Agent):
         return getattr(item, "text", "") if getattr(item, "type", None) == "text" else None
 
     def convert_prompt_message_to_message_param(self, prompt_message: PromptMessage) -> dict[str, Any]:
-        role = "user" if prompt_message.role == "user" else "assistant"
+        role = ROLE_USER if prompt_message.role == ROLE_USER else ROLE_ASSISTANT
         content = prompt_message.content
 
         if isinstance(content, list):
@@ -154,4 +156,4 @@ class DocAgent(Agent):
         Answer the user's question directly and concisely, starting with the exact information they need. \
         Don't refer to the provided context; just use it to inform your answer."""
 
-        self.messages.append({"role": "user", "content": prompt})
+        self._add(ROLE_USER, prompt)

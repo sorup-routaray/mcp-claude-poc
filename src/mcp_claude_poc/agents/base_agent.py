@@ -5,6 +5,7 @@ import anyio
 from mcp import MCPError, types
 
 from mcp_claude_poc.client.mcp_client import MCPClient
+from mcp_claude_poc.constants import ROLE_ASSISTANT, ROLE_USER, Role
 from mcp_claude_poc.core.claude_client import ClaudeClient
 
 # Upper bound on Claude <-> tool round trips for a single user query, so a
@@ -30,9 +31,21 @@ class Agent:
         # Holds SDK param dicts and, for assistant turns, SDK content blocks.
         self.messages: list[dict[str, Any]] = []
 
+    # The one place that appends to the conversation history.
+    #
+    # `content` is stored exactly as given, never converted:
+    #   - a str for a plain question or prompt
+    #   - a list of content blocks: tool_result blocks, or a model response's
+    #     `response.content` (text, tool_use, thinking blocks, ...). The API
+    #     needs these as blocks; converting them to text breaks the next
+    #     request, and thinking blocks must be sent back unchanged.
+    # History is append-only: earlier turns are never edited or removed.
+    def _add(self, role: Role, content: Any) -> None:
+        self.messages.append({"role": role, "content": content})
+
     # Subclasses turn the raw query into one or more user messages.
     async def _process_query(self, query: str) -> None:
-        self.messages.append({"role": "user", "content": query})
+        self._add(ROLE_USER, query)
 
     # Collect tools from every MCP server, in Anthropic tool format, plus a
     # name -> client map used to route tool calls back to the right server.
@@ -128,15 +141,20 @@ class Agent:
             if block.type == "tool_use"
         ]
         if results:
-            self.messages.append({"role": "user", "content": results})
+            self._add(ROLE_USER, results)
 
     async def run(self, query: str) -> str:
         await self._process_query(query)
         tools, routes = await self._collect_tools()
 
+        # Iterate through tool-call rounds, sending the conversation history
+        # to Claude and handling tool_use blocks until either a final answer
+        # is produced or the maximum number of rounds is reached.
         for _ in range(MAX_TOOL_ROUNDS):
             response = await self.claude_client.send_message(self.messages, tools=tools)
-            self.claude_client.add_message(self.messages, response, "assistant")
+            # Keep the full content list (text, tool_use, thinking blocks, ...),
+            # not just the text: the API requires it on the next request.
+            self._add(ROLE_ASSISTANT, response.content)
 
             if response.stop_reason == "tool_use":
                 try:
@@ -147,7 +165,8 @@ class Agent:
                     # question in this session doesn't hit a 400.
                     self._close_unrun_tools(response, "the tool call failed before completing.")
                     raise
-                self.messages.append({"role": "user", "content": tool_results})
+                # All tool_result blocks for this turn, as blocks, in one message.
+                self._add(ROLE_USER, tool_results)
                 continue
 
             text = self.claude_client.text_from_message(response)
