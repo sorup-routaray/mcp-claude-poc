@@ -88,8 +88,8 @@ print(claude_client.text_from_message(response))
 
 | Member | What it does |
 | --- | --- |
-| `__init__(model, max_tokens=1024, effort=None)` | Creates an `AsyncAnthropic` client (key from `ANTHROPIC_API_KEY`) |
-| `send_message(messages, system=None, stop_sequences=None, tools=None)` | Calls `client.beta.messages.create`. Sends optional params only when set; adds `output_config.effort` if `effort` is set; adds the refusal fallback for models in `FALLBACK_MODELS` |
+| `__init__(model, max_tokens=16000, effort=None)` | Creates an `AsyncAnthropic` client (key from `ANTHROPIC_API_KEY`) |
+| `send_message(messages, system=None, stop_sequences=None, tools=None)` | Calls `client.beta.messages.stream` and returns the final message (streaming, so large `max_tokens` values work). Sends optional params only when set; adds `output_config.effort` if `effort` is set; adds the refusal fallback for models in `FALLBACK_MODELS` |
 | `add_message(messages, message, role)` | Appends a turn. For a `BetaMessage` it keeps the full `content` list, which the API requires on the next request |
 | `text_from_message(message)` | Joins the `text` blocks of a response |
 

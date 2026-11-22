@@ -66,10 +66,38 @@ class MCPClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
-    # List the tools available on the MCP server
+    # Follow MCP pagination (`next_cursor`) and collect every page's items.
+    #
+    # `fetch` is a session method such as session.list_tools, and `field` is
+    # the name of the list on its result ("tools", "resources", ...).
+    #
+    # Guarded against servers with broken pagination: a loop that just follows
+    # `next_cursor` never ends if a server keeps returning a cursor (for
+    # example the same one every time). That would hang the agent before it
+    # ever calls Claude, because tools are listed on every question. So we
+    # stop when a cursor repeats, and after MAX_PAGES pages at most.
+    MAX_PAGES = 100
+
+    async def _paginate(self, fetch, field: str) -> list:
+        items: list = []
+        seen: set[str] = set()
+        cursor: str | None = None
+        for _ in range(self.MAX_PAGES):
+            params = types.PaginatedRequestParams(cursor=cursor) if cursor else None
+            result = await fetch(params=params)
+            items.extend(getattr(result, field))
+            cursor = result.next_cursor
+            if not cursor or cursor in seen:
+                # No more pages, or the server sent a cursor we already
+                # followed (it would only return the same pages again).
+                return items
+            seen.add(cursor)
+        print(f"Warning: stopped listing {field} after {self.MAX_PAGES} pages.", file=sys.stderr)
+        return items
+
+    # List the tools available on the MCP server, following pagination.
     async def list_tools(self) -> list[types.Tool]:
-        result = await self.session().list_tools()
-        return result.tools
+        return await self._paginate(self.session().list_tools, "tools")
 
     # Call a particular tool on the MCP server
     async def call_tool(self, tool_name: str, tool_input: dict[str, Any]) -> types.CallToolResult:
@@ -101,29 +129,14 @@ class MCPClient:
         return resource.blob  # base64 data for binary resources
 
     # List all resources from the MCP server, following pagination.
-        # List all resources from the MCP server, following pagination.
     async def list_resources(self) -> list[types.Resource]:
-        resources: list[types.Resource] = []
-        cursor: str | None = None
-        while True:
-            params = types.PaginatedRequestParams(cursor=cursor) if cursor else None
-            result = await self.session().list_resources(params=params)
-            resources.extend(result.resources)
-            cursor = result.next_cursor
-            if not cursor:
-                return resources
+        return await self._paginate(self.session().list_resources, "resources")
 
     # List resource templates (URIs with placeholders like {doc_id}).
     async def list_resource_templates(self) -> list[types.ResourceTemplate]:
-        templates: list[types.ResourceTemplate] = []
-        cursor: str | None = None
-        while True:
-            params = types.PaginatedRequestParams(cursor=cursor) if cursor else None
-            result = await self.session().list_resource_templates(params=params)
-            templates.extend(result.resource_templates)
-            cursor = result.next_cursor
-            if not cursor:
-                return templates
+        return await self._paginate(
+            self.session().list_resource_templates, "resource_templates"
+        )
 
     async def print_resources(self) -> None:
         for r in await self.list_resources():
