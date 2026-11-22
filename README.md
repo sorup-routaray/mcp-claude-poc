@@ -3,7 +3,7 @@
 A command-line chat app where **Claude** answers questions about a small set of documents served by an **MCP (Model Context Protocol) server**.
 
 ```text
-you ──> CLI (prompt_toolkit) ──> Chat loop ──> Claude API (anthropic SDK)
+you ──> CLI (prompt_toolkit) ──> DocAgent loop ──> Claude API (ClaudeClient)
                                      │  ▲
                           tool calls ▼  │ tool results
                                  MCPClient ──stdio──> DocumentMCP server
@@ -13,11 +13,32 @@ you ──> CLI (prompt_toolkit) ──> Chat loop ──> Claude API (anthropic
 | --- | --- | --- |
 | **Server** | `server/mcp_server.py` | MCP server `DocumentMCP`. Tools: `read_doc`, `write_doc`. Resources: `docs://documents`, `docs://documents/{doc_id}`. Prompts: `format`, `summarize` |
 | **Client** | `client/mcp_client.py` | Async wrapper around the MCP `ClientSession`; launches a server as a subprocess over stdio |
+| **Agent** | `agents/base_agent.py` + `agents/doc_agent.py` | `Agent` runs the tool-use loop; `DocAgent` adds document features on top (see [Agent](#agent)) |
+| **Claude client** | `core/claude_client.py` | `ClaudeClient`: async wrapper around the Claude API |
 | **Main app** | `main.py` | Starts the server(s), gives Claude their tools, and runs an interactive prompt (or a single `--query`). Claude calls tools in a loop until it has an answer |
 
 ## Contents
 
-[Quickstart](#quickstart) · [Requirements](#requirements) · [Configuration](#configuration) · [Usage](#usage) · [Run each component](#run-each-component) · [Run the server alone](#run-the-server-alone) · [Testing](#testing) · [Troubleshooting](#troubleshooting) · [Design notes](#design-notes) · [Project layout](#project-layout)
+1. [Quickstart](#quickstart)
+2. [Agent](#agent)
+   - [`ClaudeClient`](#claudeclient)
+   - [Agent loop (`Agent.run`)](#agent-loop-agentrun)
+3. [Requirements](#requirements)
+   - [Without uv (plain pip)](#without-uv-plain-pip)
+4. [Configuration](#configuration)
+5. [Usage](#usage)
+6. [Run each component](#run-each-component)
+   - [1. Chat app (client + Claude + server)](#1-chat-app-client--claude--server)
+   - [2. MCP server only](#2-mcp-server-only)
+   - [3. MCP client smoke test](#3-mcp-client-smoke-test)
+   - [4. MCP Inspector](#4-mcp-inspector)
+7. [Run the server alone](#run-the-server-alone)
+8. [Testing](#testing)
+   - [Client smoke test (no Claude or API key needed)](#client-smoke-test-no-claude-or-api-key-needed)
+   - [MCP Inspector (browser UI)](#mcp-inspector-browser-ui)
+9. [Troubleshooting](#troubleshooting)
+10. [Design notes](#design-notes)
+11. [Project layout](#project-layout)
 
 ---
 
@@ -32,6 +53,62 @@ uv run mcp-claude-poc                # starts the server for you and opens the c
 ```
 
 Try: `Summarize @report.pdf` or `/format deposition.md`.
+
+## Agent
+
+The app's agent is **DocAgent**, a **tool-using agent** for documents: Claude decides which MCP tools to call, the agent runs them, feeds the results back, and repeats until Claude has a final answer. It's built from these pieces:
+
+| Piece | Role | Class / file |
+| --- | --- | --- |
+| Agent loop | Sends requests, runs tool calls, returns results, stops when done. Works with any MCP server | `Agent` – `agents/base_agent.py` |
+| Document agent | Adds `@doc` mentions, `/prompt` commands and the document server on top of the loop | `DocAgent(Agent)` – `agents/doc_agent.py` |
+| Model | Reasons and chooses tools | `ClaudeClient` – `core/claude_client.py` |
+| Tools | Actions and data the agent can use | `MCPClient` sessions – `client/mcp_client.py` → `DocumentMCP` server |
+
+```python
+from mcp_claude_poc.agents.doc_agent import DocAgent
+from mcp_claude_poc.core.claude_client import ClaudeClient
+
+claude_client = ClaudeClient("claude-opus-5-5", max_tokens=16000, effort="medium")
+agent = DocAgent(doc_client=doc_client, clients={"doc_client": doc_client}, claude_client=claude_client)
+print(await agent.run("Summarize @report.pdf"))
+```
+
+To build another agent, subclass `Agent` and override `_process_query()` (for example `SqlAgent(Agent)`); the loop stays the same.
+
+### `ClaudeClient`
+
+A thin async wrapper around the Anthropic SDK. It makes **one** Messages API call per `send_message()`; it doesn't loop or run tools itself (that's `Agent`'s job).
+
+```python
+response = await claude_client.send_message(messages, system="...", tools=tools)
+claude_client.add_message(messages, response, "assistant")   # keeps thinking/tool_use blocks
+print(claude_client.text_from_message(response))
+```
+
+| Member | What it does |
+| --- | --- |
+| `__init__(model, max_tokens=1024, effort=None)` | Creates an `AsyncAnthropic` client (key from `ANTHROPIC_API_KEY`) |
+| `send_message(messages, system=None, stop_sequences=None, tools=None)` | Calls `client.beta.messages.create`. Sends optional params only when set; adds `output_config.effort` if `effort` is set; adds the refusal fallback for models in `FALLBACK_MODELS` |
+| `add_message(messages, message, role)` | Appends a turn. For a `BetaMessage` it keeps the full `content` list, which the API requires on the next request |
+| `text_from_message(message)` | Joins the `text` blocks of a response |
+
+### Agent loop (`Agent.run`)
+
+```text
+user query ──> _process_query()            # DocAgent: @mentions inlined, /prompt commands expanded
+          ──> _collect_tools()             # tools from every MCP server, name -> server routing
+          ┌─> ClaudeClient.send_message(messages, tools)
+          │        stop_reason == "tool_use"?
+          │          yes: _run_tools() -> MCPClient.call_tool() -> tool_result blocks ─┐
+          └──────────────────────────────────────────────────────────────────────────┘
+                   no:  return text  ("refusal" / "max_tokens" are reported)
+```
+
+- **Max rounds:** `MAX_TOOL_ROUNDS = 20` tool round trips per question, so a runaway loop can't run (and bill) forever.
+- **Multiple servers:** tools from every `--server` are offered to Claude. On a name clash, the first server wins.
+- **Tool errors** (unknown tool, `MCPError`) go back to Claude as `tool_result` with `is_error: true`, so it can recover instead of crashing.
+- **Memory:** the conversation (`Agent.messages`) lives for the whole chat session, in memory only.
 
 ## Requirements
 
@@ -295,7 +372,7 @@ The first run asks to install the `@modelcontextprotocol/inspector` npm package.
 
 - **Async client.** Uses `AsyncAnthropic` so API calls don't block the event loop that also runs the MCP sessions.
 - **Thinking.** Not configured explicitly. Current models (Opus 5.5, Sonnet 5.5, Fable 5.x) run adaptive thinking by default and **reject** the old `{"type": "enabled", "budget_tokens": N}` form. Control depth with `CLAUDE_EFFORT` / `--effort`.
-- **Refusal fallback.** For `claude-opus-5-5` (and the other models listed in `custom_claude.py`), requests opt into the server-side refusal fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`). If a safety classifier declines, the API retries on a fallback model within the same call. To turn it off, remove the model from `FALLBACK_MODELS`.
+- **Refusal fallback.** For `claude-opus-5-5` (and the other models listed in `core/claude_client.py`), requests opt into the server-side refusal fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`). If a safety classifier declines, the API retries on a fallback model within the same call. To turn it off, remove the model from `FALLBACK_MODELS`.
 - **Conversation history.** The full assistant `content` (including thinking blocks) is sent back on every turn, as the API requires.
 
 ## Project layout
@@ -308,11 +385,12 @@ mcp-claude-poc/
 └── src/mcp_claude_poc/
     ├── main.py             # entry point (console script: mcp-claude-poc)
     ├── config.py           # .env + command-line settings
+    ├── agents/
+    │   ├── base_agent.py     # Agent: tool-use loop (Claude <-> MCP tools)
+    │   └── doc_agent.py      # DocAgent(Agent): @mentions and /prompt commands
     ├── client/mcp_client.py
     ├── core/
-    │   ├── custom_claude.py  # Claude API wrapper
-    │   ├── chat.py           # tool-use loop (Claude <-> MCP tools)
-    │   ├── cli_chat.py       # @mentions and /prompt commands
+    │   ├── claude_client.py  # ClaudeClient: Claude API wrapper
     │   └── cli.py            # interactive prompt UI with completion
     └── server/mcp_server.py  # DocumentMCP server (console script: mcp-claude-poc-server)
 ```
