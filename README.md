@@ -146,7 +146,9 @@ print(claude_client.text_from_message(response))
 | Member | What it does |
 | --- | --- |
 | `__init__(model, max_tokens=16000, effort=None)` | Creates an `AsyncAnthropic` client (key from `ANTHROPIC_API_KEY`) |
-| `send_message(messages, system=None, stop_sequences=None, tools=None)` | Calls `client.beta.messages.stream` and returns the final message (streaming, so large `max_tokens` values work). Sends optional params only when set; adds `output_config.effort` if `effort` is set; adds the refusal fallback for models in `FALLBACK_MODELS` |
+| `send_message(messages, system=None, stop_sequences=None, tools=None)` | Regular request: calls `client.messages.create` and returns the response. The SDK refuses it when `max_tokens` is above ~21K |
+| `stream_message(messages, system=None, stop_sequences=None, tools=None)` | Streaming request: calls `client.messages.stream` and returns the final message, so large `max_tokens` values work. Used by the agent loop |
+| `_build_params(...)` | Shared by both: sends optional params only when set; adds `output_config.effort` if `effort` is set |
 | `text_from_message(message)` | Joins the `text` blocks of a response |
 
 ### Agent loop (`Agent.run`)
@@ -630,7 +632,7 @@ The first run asks to install the `@modelcontextprotocol/inspector` npm package.
 
 - **Async client.** Uses `AsyncAnthropic` so API calls don't block the event loop that also runs the MCP sessions.
 - **Thinking.** Not configured explicitly. Current models (Opus 5.5, Sonnet 5.5, Fable 5.x) run adaptive thinking by default and **reject** the old `{"type": "enabled", "budget_tokens": N}` form. Control depth with `CLAUDE_EFFORT` / `--effort`.
-- **Refusal fallback.** For `claude-opus-5-5` (and the other models listed in `core/claude_client.py`), requests opt into the server-side refusal fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`). If a safety classifier declines, the API retries on a fallback model within the same call. To turn it off, remove the model from `FALLBACK_MODELS`.
+- **Refusals.** If a safety classifier declines, the response comes back with `stop_reason: "refusal"` and the agent reports the category. There is no automatic retry on another model (that needs the beta API, which this client doesn't use).
 - **Conversation history.** The full assistant `content` (including thinking blocks) is sent back on every turn, as the API requires.
 
 ## Project layout

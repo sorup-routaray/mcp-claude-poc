@@ -20,7 +20,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
+MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
 # Thinking is always on for current models and counts toward max_tokens,
 # so a small value (e.g. 1024) truncates answers. 16000 is a safe default.
 MAX_TOKENS = _env_int("MAX_TOKENS", 16000)
