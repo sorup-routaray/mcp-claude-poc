@@ -2,17 +2,21 @@
 from typing import Any
 
 from anthropic import AsyncAnthropic
-from anthropic.types.beta import BetaMessage
+from anthropic.types import Message
 
-# Models that accept the server-side refusal fallback (`fallbacks: "default"`).
-# On these models a safety-classifier decline is retried on a fallback model
-# inside the same API call instead of just returning stop_reason="refusal".
-FALLBACK_MODELS = {
-    "claude-opus-5-5",
-    "claude-opus-5",
-    "claude-sonnet-5-5",
-}
-FALLBACK_BETA = "server-side-fallback-2026-07-01"
+claude_models = [
+    {"name": "Haiku 5.5",  "api_id": "claude-haiku-5-5",  "input": 0.10, "output": 0.50},   # prompts <= 100K tokens
+    {"name": "Sonnet 5.5", "api_id": "claude-sonnet-5-5", "input": 2.00, "output": 10.00},
+    {"name": "Opus 5.5",   "api_id": "claude-opus-5-5",   "input": 4.00, "output": 20.00},
+    {"name": "Fable 5.2",  "api_id": "claude-fable-5-2",  "input": 8.00, "output": 40.00},
+]
+# Simple list of names only
+model_names = [m["name"] for m in claude_models]
+# ['Haiku 5.5', 'Sonnet 5.5', 'Opus 5.5', 'Fable 5.2']
+
+# Simple list of API model strings only
+model_ids = [m["api_id"] for m in claude_models]
+# ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-2']
 
 
 class ClaudeClient:
@@ -27,8 +31,8 @@ class ClaudeClient:
             # Maximum number of tokens to generate in the response. Thinking
             # is always on for current models and counts toward this limit,
             # so a small value (e.g. 1024) cuts answers off. 16000 matches the
-            # MAX_TOKENS default in config.py; requests stream, so higher
-            # values (up to the model's 128K output cap) work too.
+            # MAX_TOKENS default in config.py. Values above ~21K need
+            # stream_message(); send_message() is refused by the SDK there.
             max_tokens: int = 16000,
             # Effort level for the model's output generation.
             effort: str | None = None
@@ -42,11 +46,11 @@ class ClaudeClient:
         self.client = AsyncAnthropic()
 
     # Extracts the text content from a message object.
-    def text_from_message(self, message: BetaMessage) -> str:
+    def text_from_message(self, message: Message) -> str:
         return "\n".join(block.text for block in message.content if block.type == "text")
 
-    # Sends a request to the Claude API and returns the response message.
-    async def send_message(
+    # Builds the request params shared by send_message() and stream_message().
+    def _build_params(
         self,
         # List of messages representing the conversation history.
         messages: list,
@@ -56,7 +60,7 @@ class ClaudeClient:
         stop_sequences: list[str] | None = None,
         # List of tools available for the model to use.
         tools: list[dict[str, Any]] | None = None,
-    ) -> BetaMessage:
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -73,23 +77,34 @@ class ClaudeClient:
         if self.effort:
             params["output_config"] = {"effort": self.effort}
 
-        betas: list[str] = []
-        if self.model in FALLBACK_MODELS:
-            betas.append(FALLBACK_BETA)
-            params["fallbacks"] = "default"
-
         # Thinking is not configured explicitly: current models (Opus 5.5,
         # Sonnet 5.5, Fable 5.x) run adaptive thinking by default and reject
         # the old {"type": "enabled", "budget_tokens": N} form with a 400.
-        #
-        # Streaming instead of `messages.create()`: for a non-streaming call the
-        # SDK estimates how long the response could take from `max_tokens`, and
-        # above ~21,333 tokens it refuses the request up front ("Streaming is
-        # required for operations that may take longer than 10 minutes").
-        # Streaming has no such limit, so any --max-tokens value (up to the
-        # model's 128K output cap) works. We don't show tokens as they arrive:
-        # get_final_message() waits for the end of the stream and returns the
-        # same BetaMessage that create() would have returned, so callers don't
-        # change.
-        async with self.client.beta.messages.stream(betas=betas, **params) as stream:
+        return params
+
+    # Regular (non-streaming) request: returns the complete response message.
+    # The SDK refuses non-streaming calls whose max_tokens implies they could
+    # take over 10 minutes (above ~21,333 tokens) - use stream_message() then.
+    async def send_message(
+        self,
+        messages: list,
+        system: str | None = None,
+        stop_sequences: list[str] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Message:
+        params = self._build_params(messages, system, stop_sequences, tools)
+        return await self.client.messages.create(**params)
+
+    # Streaming request: no max_tokens timeout limit, so any value up to the
+    # model's 128K output cap works. get_final_message() waits for the end of
+    # the stream and returns the same Message that send_message() would.
+    async def stream_message(
+        self,
+        messages: list,
+        system: str | None = None,
+        stop_sequences: list[str] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Message:
+        params = self._build_params(messages, system, stop_sequences, tools)
+        async with self.client.messages.stream(**params) as stream:
             return await stream.get_final_message()
