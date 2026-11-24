@@ -4,6 +4,8 @@ from typing import Any
 from anthropic import AsyncAnthropic
 from anthropic.types import Message
 
+from mcp_claude_poc.core.call_logger import logged_call
+
 claude_models = [
     {"name": "Haiku 5.5",  "api_id": "claude-haiku-5-5",  "input": 0.10, "output": 0.50},   # prompts <= 100K tokens
     {"name": "Sonnet 5.5", "api_id": "claude-sonnet-5-5", "input": 2.00, "output": 10.00},
@@ -93,7 +95,9 @@ class ClaudeClient:
         tools: list[dict[str, Any]] | None = None,
     ) -> Message:
         params = self._build_params(messages, system, stop_sequences, tools)
-        return await self.client.messages.create(**params)
+        async with logged_call("claude", "messages.create", self.model, params) as rec:
+            rec.response = await self.client.messages.create(**params)
+        return rec.response
 
     # Streaming request: no max_tokens timeout limit, so any value up to the
     # model's 128K output cap works. get_final_message() waits for the end of
@@ -106,5 +110,7 @@ class ClaudeClient:
         tools: list[dict[str, Any]] | None = None,
     ) -> Message:
         params = self._build_params(messages, system, stop_sequences, tools)
-        async with self.client.messages.stream(**params) as stream:
-            return await stream.get_final_message()
+        async with logged_call("claude", "messages.stream", self.model, params) as rec:
+            async with self.client.messages.stream(**params) as stream:
+                rec.response = await stream.get_final_message()
+        return rec.response

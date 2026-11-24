@@ -330,8 +330,25 @@ Settings come from `.env`; command-line flags override them.
 | `USE_UV` | `--use-uv` / `--no-use-uv` | no | `0` | `1` launches MCP servers with `uv run`; `0` uses the current Python interpreter |
 | – | `--server PATH` | no | – | Add another MCP server script (repeatable). Its tools are offered to Claude too |
 | – | `-q`, `--query TEXT` | no | – | Ask one question, print the answer, exit |
+| `CALL_LOG_ENABLED` | – | no | `0` | `1` logs every Claude API call and MCP server call (request + response) to a file |
+| `CALL_LOG_FILE` | – | no | `logs/calls.log` | Log file path (relative paths are from the directory you run the app in) |
+| `CALL_LOG_MAX_BYTES` | – | no | `10485760` | Rotate the log file at this size |
+| `CALL_LOG_BACKUP_COUNT` | – | no | `5` | Number of rotated files to keep (`calls.log.1`, ...) |
 
 > `.env` holds your secret key and is listed in `.gitignore`. Never commit it.
+
+### Call log
+
+With `CALL_LOG_ENABLED=1`, `core/call_logger.py` writes one JSON line per call:
+
+```json
+{"time": "...", "source": "claude", "operation": "messages.stream", "target": "claude-opus-5-5",
+ "duration_ms": 2310.4, "status": "ok", "request": {...}, "response": {...}}
+```
+
+- `source` is `claude` (`ClaudeClient.send_message` / `stream_message`) or `mcp` (`MCPClient` list/call/get/read methods; `target` is the server script).
+- Failed calls get `"status": "error"` and an `error` field instead of `response`.
+- The file holds full prompts, tool inputs and outputs, so treat it as sensitive. `logs/` is in `.gitignore`. The API key is never logged.
 
 ## Usage
 

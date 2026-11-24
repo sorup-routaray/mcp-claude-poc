@@ -8,6 +8,8 @@ from typing import Any, Optional
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
+from mcp_claude_poc.core.call_logger import logged_call
+
 
 class MCPClient:
     """Thin wrapper around an MCP ClientSession talking to a stdio server (mcp 2.x)."""
@@ -25,6 +27,8 @@ class MCPClient:
         self._cwd = cwd
         self._session: Optional[ClientSession] = None
         self._exit_stack: Optional[AsyncExitStack] = None
+        # Server name for the call log: the script file name, else the command.
+        self._name = Path(args[-1]).name if args else command
 
     # Connect to the MCP server using stdio transport and initialize the session
     async def connect(self) -> None:
@@ -84,7 +88,9 @@ class MCPClient:
         cursor: str | None = None
         for _ in range(self.MAX_PAGES):
             params = types.PaginatedRequestParams(cursor=cursor) if cursor else None
-            result = await fetch(params=params)
+            async with logged_call("mcp", fetch.__name__, self._name, {"cursor": cursor}) as rec:
+                rec.response = await fetch(params=params)
+            result = rec.response
             items.extend(getattr(result, field))
             cursor = result.next_cursor
             if not cursor or cursor in seen:
@@ -101,22 +107,30 @@ class MCPClient:
 
     # Call a particular tool on the MCP server
     async def call_tool(self, tool_name: str, tool_input: dict[str, Any]) -> types.CallToolResult:
-        return await self.session().call_tool(tool_name, tool_input)
+        request = {"name": tool_name, "arguments": tool_input}
+        async with logged_call("mcp", "call_tool", self._name, request) as rec:
+            rec.response = await self.session().call_tool(tool_name, tool_input)
+        return rec.response
 
     # List the prompts available on the MCP server
     async def list_prompts(self) -> list[types.Prompt]:
-        result = await self.session().list_prompts()
-        return result.prompts
+        async with logged_call("mcp", "list_prompts", self._name, {}) as rec:
+            rec.response = await self.session().list_prompts()
+        return rec.response.prompts
 
     # Get a specific prompt from the MCP server
     async def get_prompt(self, prompt_name: str, args: dict[str, str]) -> list[types.PromptMessage]:
-        result = await self.session().get_prompt(prompt_name, args)
-        return result.messages
+        request = {"name": prompt_name, "arguments": args}
+        async with logged_call("mcp", "get_prompt", self._name, request) as rec:
+            rec.response = await self.session().get_prompt(prompt_name, args)
+        return rec.response.messages
 
     # Read a resource from the MCP server. JSON resources are decoded.
     async def read_resource(self, uri: str) -> Any:
         # mcp 2.x takes the URI as a plain str (1.x wanted pydantic AnyUrl).
-        result = await self.session().read_resource(uri)
+        async with logged_call("mcp", "read_resource", self._name, {"uri": uri}) as rec:
+            rec.response = await self.session().read_resource(uri)
+        result = rec.response
         if not result.contents:
             return None
         resource = result.contents[0]

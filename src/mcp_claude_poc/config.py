@@ -29,6 +29,13 @@ EFFORT = os.getenv("CLAUDE_EFFORT") or None
 # Launch MCP servers with `uv run` instead of the current Python interpreter.
 USE_UV = _env_bool("USE_UV")
 
+# Request/response logging of Claude API and MCP server calls (JSON lines).
+CALL_LOG_ENABLED = _env_bool("CALL_LOG_ENABLED")
+CALL_LOG_FILE = os.getenv("CALL_LOG_FILE") or "logs/calls.log"
+# The file rotates at this size, keeping this many old files (calls.log.1, ...).
+CALL_LOG_MAX_BYTES = _env_int("CALL_LOG_MAX_BYTES", 10 * 1024 * 1024)
+CALL_LOG_BACKUP_COUNT = _env_int("CALL_LOG_BACKUP_COUNT", 5)
+
 # One-shot question from --query (None = interactive chat)
 QUERY: str | None = None
 # Extra MCP server scripts from --server
